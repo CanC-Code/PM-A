@@ -42,15 +42,18 @@ jobs:
           import os, random
           from PIL import Image
 
-          # 1. Fix JCenter Bottleneck (Replaces slow JCenter with MavenCentral/Google)
+          # 1. Fix JCenter/Google Repository Shorthand
+          # Gradle 2.2.1 doesn't know google(), it needs the full maven URL
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
                       path = os.path.join(root, file)
                       with open(path, 'r') as f:
                           content = f.read()
-                      # Prioritize google() and mavenCentral() over jcenter()
-                      new_content = content.replace("jcenter()", "google()\n        mavenCentral()")
+                      
+                      # Replace JCenter with explicit Maven Central and Google URLs
+                      new_content = content.replace("jcenter()", "mavenCentral()\n        maven { url 'https://maven.google.com' }")
+                      
                       with open(path, 'w') as f:
                           f.write(new_content)
                       print(f"Optimized repositories in {path}")
@@ -67,18 +70,19 @@ jobs:
 
           # 3. Generate Random Pokémon Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
-          sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
-          chosen = random.choice(sprites) if sprites else None
-          sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA") if chosen else Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
-          bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
-          sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
-          bg.paste(sprite_img, (56, 56), sprite_img)
-          
-          targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
-          for folder, size in targets:
-              dest_dir = os.path.join('app/src/main/res', folder)
-              os.makedirs(dest_dir, exist_ok=True)
-              bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
+          if os.path.exists(sprite_dir):
+              sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
+              chosen = random.choice(sprites) if sprites else None
+              sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA") if chosen else Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
+              bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
+              sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
+              bg.paste(sprite_img, (56, 56), sprite_img)
+              
+              targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
+              for folder, size in targets:
+                  dest_dir = os.path.join('app/src/main/res', folder)
+                  os.makedirs(dest_dir, exist_ok=True)
+                  bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
           EOF
 
       - name: Sanitize and Fix Gradle
@@ -87,7 +91,6 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        # Increased heap size for old Gradle versions to prevent memory timeouts
         run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
       - name: Upload APK
