@@ -100,17 +100,13 @@ jobs:
                       os.makedirs(os.path.dirname(dest), exist_ok=True)
                       bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
 
-          # 4. Manifest Exported Fix & Storage Rights (Android 10-14 Compatibility)
+          # 4. Manifest Exported Fix (Android 12+ Compatibility)
           m_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(m_path):
               with open(m_path, 'r', encoding='utf-8') as f: content = f.read()
               
               # Force exported="true" on ALL activities reliably
               content = re.sub(r'<activity([^>]*?)>', lambda m: f'<activity{m.group(1)}>' if 'android:exported' in m.group(1) else f'<activity{m.group(1)} android:exported="true">', content)
-              
-              # Add legacy storage support (prevents instant crash when trying to access save files)
-              if 'requestLegacyExternalStorage' not in content:
-                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true" ')
                   
               with open(m_path, 'w', encoding='utf-8') as f: f.write(content)
           EOF
