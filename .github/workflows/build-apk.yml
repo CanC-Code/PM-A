@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Environment
+      - name: Set up Build Environment
         uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -28,70 +28,66 @@ jobs:
       - name: Install SDK 23
         run: echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
-      - name: Set up JDK 8
+      - name: Set up JDK 8 (Compile)
         uses: actions/setup-java@v4
         with:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Surgical Source Patcher
+      - name: Surgical Source Patcher & Translator
         run: |
+          pip install Pillow
           python - <<EOF
           import os, re
+          from PIL import Image
 
-          def safe_patch():
-              # 1. Manifest Repair (Critical for Launch)
-              manifest_path = 'app/src/main/AndroidManifest.xml'
-              if os.path.exists(manifest_path):
-                  with open(manifest_path, 'r', encoding='utf-8') as f:
-                      content = f.read()
-                  # Ensure exported is true for the launcher
-                  if 'android:exported' not in content:
-                      content = content.replace('android:name=".main.Activity_Main"', 
-                                               'android:name=".main.Activity_Main" android:exported="true"')
-                  with open(manifest_path, 'w', encoding='utf-8') as f:
-                      f.write(content)
+          # 1. Translation Dictionary
+          translations = {
+              "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
+              "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
+              "返 回": "Back", "编号": "No.", "职业": "Class", "地区": "Region",
+              "身份": "Rank", "属性": "Type", "特性": "Ability", "性格": "Nature",
+              "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
+              "生命": "HP", "重": "WT", "长": "HT", "蛋": "Egg", "遇": "Seen", "捕": "Got",
+              "体力回复": "Heal HP", "状态回复": "Heal Stat", "精灵球": "Pokéball",
+              "战斗用品": "Items", "神奥": "Sinnoh", "冠军": "Champ", "训练师": "Trainer",
+              "家乡": "Home", "一城": "City 1", "二城": "City 2", "道路": "Route",
+              "郊野": "Wilds", "森林": "Forest", "山区": "Mountain", "未知": "???"
+          }
 
-              # 2. Logic & UI Fixes
-              for root, dirs, files in os.walk("app/src/main/java"):
-                  for file in files:
-                      if file.endswith(".java"):
-                          path = os.path.join(root, file)
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  path = os.path.join(root, file)
+                  if file.endswith((".java", ".xml")):
+                      try:
                           with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                              lines = f.readlines()
+                              content = f.read()
                           
-                          new_lines = []
-                          for line in lines:
-                              # Fix font crashes by using system default
-                              if "Typeface.createFromAsset" in line:
-                                  line = re.sub(r'Typeface\.createFromAsset\(.*?\)', 'Typeface.DEFAULT', line)
-                              
-                              # Fix MDraw loop boundary crashes
-                              if "yy <= VData.allSIZE.y + 1" in line:
-                                  line = line.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                              if "xx <= VData.allSIZE.x + 1" in line:
-                                  line = line.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                                  
-                              # Translation (Common UI Elements)
-                              line = line.replace('"图 鉴"', '"Dex"').replace('"地 图"', '"Map"')
-                              line = line.replace('"战 斗"', '"Fight"').replace('"队 伍"', '"Team"')
-                              line = line.replace('"物 品"', '"Bag"').replace('"逃 跑"', '"Run"')
-                              
-                              new_lines.append(line)
+                          # Translation
+                          for cn, en in translations.items():
+                              content = content.replace(cn, en)
                           
+                          # Font Fix: Use a safer regex to avoid syntax errors
+                          # Replaces Typeface.createFromAsset(...) with Typeface.DEFAULT
+                          content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]*|\([^()]*\))*\)', 'Typeface.DEFAULT', content)
+
+                          # MDraw: Fix loop boundary crash (Off-by-one error)
+                          if file == "MDraw.java":
+                              content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                              content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+
+                          # VData: Defensive Null Check for logicMap
+                          if file == "VData.java":
+                              content = content.replace("MDraw.logicMap[y][x]", "((MDraw.logicMap != null && y < MDraw.logicMap.length && x < MDraw.logicMap[0].length) ? MDraw.logicMap[y][x] : 0)")
+
+                          # Build.gradle: Modern Repos & Compatibility
+                          if file == "build.gradle":
+                              content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
+                              content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
+
                           with open(path, 'w', encoding='utf-8') as f:
-                              f.writelines(new_lines)
-
-              # 3. Build Configuration
-              if os.path.exists('app/build.gradle'):
-                  with open('app/build.gradle', 'r') as f:
-                      content = f.read()
-                  content = content.replace("jcenter()", "mavenCentral()")
-                  content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
-                  with open('app/build.gradle', 'w') as f:
-                      f.write(content)
-
-          safe_patch()
+                              f.write(content)
+                      except Exception as e: print(f"Error patching {file}: {e}")
           EOF
 
       - name: Build APK
@@ -103,5 +99,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Debug-Build
+          name: WiiPM-English-Stable
           path: app/build/outputs/apk/app-debug.apk
