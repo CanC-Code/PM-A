@@ -37,14 +37,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Compatibility Fixes and Dynamic Assets
+      - name: Moto G Compatibility & Assets
         run: |
           pip install Pillow
           python - <<EOF
           import os, random, re
           from PIL import Image
 
-          # 1. Repository Fixes & Disable Buggy PNG Cruncher
+          # 1. Build.gradle Fixes (Repos & Target SDK Bump)
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
@@ -52,42 +52,43 @@ jobs:
                       with open(path, 'r') as f:
                           content = f.read()
                       content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
+                      # Bump targetSdkVersion to 26 for Android 14 compatibility
+                      content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
                       if 'android {' in content and 'aaptOptions' not in content:
-                          crunch_fix = "\n    aaptOptions {\n        cruncherEnabled = false\n        useNewCruncher = false\n    }\n"
-                          content = content.replace('android {', 'android {' + crunch_fix)
+                          content = content.replace('android {', 'android {\n    aaptOptions { cruncherEnabled = false; useNewCruncher = false }\n')
                       with open(path, 'w') as f:
                           f.write(content)
 
-          # 2. Surgical Manifest Fix (Avoid duplicates)
+          # 2. Manifest Surgical Fix (Permissions & Exported)
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
               
-              # Find the main activity block
-              pattern = r'(<activity[^>]*?android:name="\.main\.Activity_Main"[^>]*?)'
-              match = re.search(pattern, content)
+              # Inject Storage Permissions if missing
+              if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
+                  perms = '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />'
+                  content = content.replace('<application', perms + '\n    <application')
               
-              if match:
-                  tag_content = match.group(1)
-                  if 'android:exported' not in tag_content:
-                      # Only add if it's missing to avoid [Fatal Error]
-                      new_tag = tag_content + ' android:exported="true"'
-                      content = content.replace(tag_content, new_tag)
-                      with open(manifest_path, 'w') as f:
-                          f.write(content)
-                      print("Surgically added android:exported='true'.")
-                  else:
-                      print("android:exported already exists, skipping.")
+              # Add exported="true" ONLY if missing (to avoid duplicate attribute error)
+              if 'android:exported' not in content:
+                  content = content.replace('<activity', '<activity android:exported="true"')
+              
+              # Add Legacy Storage Support for Android 14
+              if 'requestLegacyExternalStorage' not in content:
+                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
 
-          # 3. Generate Random Pokémon Icon
+              with open(manifest_path, 'w') as f:
+                  f.write(content)
+
+          # 3. Dynamic Pokémon Icon (Same as before)
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
               chosen = random.choice(sprites) if sprites else None
               if chosen:
                   sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-                  bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
+                  bg = Image.new('RGBA', (255, 255, 255, 255), (255, 255, 255, 255))
                   sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
                   bg.paste(sprite_img, (56, 56), sprite_img)
                   for folder, size in [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]:
@@ -96,26 +97,16 @@ jobs:
                       bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
           EOF
 
-      - name: Sanitize and Fix Gradle
-        run: |
-          sed -i 's/\r$//' gradlew
-          chmod +x gradlew
-
       - name: Build Debug APK
         env:
           SLAVE_AAPT_TIMEOUT: 60
-        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
-
-      - name: Final APK Verification
         run: |
-          APK_FILE=$(find app/build/outputs/apk/ -name "app-debug.apk" | head -n 1)
-          $ANDROID_HOME/build-tools/23.0.2/aapt dump badging "$APK_FILE" | grep "launchable-activity" || true
-          $ANDROID_HOME/build-tools/23.0.2/aapt dump xmltree "$APK_FILE" AndroidManifest.xml > final_manifest.txt
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+          ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
-      - name: Upload APK & Final Manifest
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Surgical-Build
-          path: |
-            app/build/outputs/apk/app-debug.apk
-            final_manifest.txt
+          name: WiiPM-Android14-Compatible
+          path: app/build/outputs/apk/app-debug.apk
