@@ -1,4 +1,4 @@
-name: Build WiiPM Stable
+name: Build WiiPM Stable & Translated
 
 on:
   push:
@@ -34,41 +34,72 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Surgical Mega-Patcher
+      - name: Dynamic Translator & Mega-Patcher
         run: |
           pip install Pillow
           python - <<EOF
-          import os, random, re
+          import os, random, re, json, urllib.request
           from PIL import Image
 
-          # 1. Translation Dictionary
+          # 1. Base UI Translation Dictionary
           translations = {
               "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
               "返 回": "Back", "属性": "Type", "特性": "Ability", "性格": "Nature",
               "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
-              "生命": "HP", "编号": "No.", "职业": "Class", "地区": "Region", "身份": "Rank"
+              "生命": "HP", "编号": "No.", "职业": "Class", "地区": "Region", "身份": "Rank",
+              "技能": "Moves", "经验": "EXP"
           }
 
-          # 2. Process Files with Syntax Awareness
+          # 2. Dynamically Fetch Pokemon & Move Localizations
+          print("Fetching dynamic localization data...")
+          try:
+              # Using a standard Pokemon open source data repository for CN->EN mappings
+              req = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/en.json", headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as response:
+                  en_names = json.loads(response.read().decode())
+              
+              req_zh = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/zh-hans.json", headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req_zh) as response:
+                  zh_names = json.loads(response.read().decode())
+              
+              # Map Chinese names directly to English names
+              for zh, en in zip(zh_names, en_names):
+                  translations[zh] = en
+              print(f"Successfully loaded {len(en_names)} Pokemon name translations.")
+          except Exception as e:
+              print(f"Notice: Could not fetch dynamic Pokemon names ({e}). Using base UI translations only.")
+
+          # 3. Safe Translation Function (Protects Image Paths)
+          def safe_translate(file_content):
+              lines = file_content.split('\n')
+              for i in range(len(lines)):
+                  # Skip translating lines that define file paths to prevent missing sprites
+                  if any(ext in lines[i].lower() for ext in ['.png', '.jpg', '.gif', 'assets/']):
+                      continue
+                  for cn, en in translations.items():
+                      if cn in lines[i]:
+                          lines[i] = lines[i].replace(cn, en)
+              return '\n'.join(lines)
+
+          # 4. Process Files (Java & XML & TXT)
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
-                  if file.endswith((".java", ".xml")):
+                  if file.endswith((".java", ".xml", ".txt")):
                       try:
                           with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                               content = f.read()
                           
-                          # -- TRANSLATION --
-                          for cn, en in translations.items():
-                              content = content.replace(cn, en)
+                          # Apply protected translation
+                          content = safe_translate(content)
                           
                           if file.endswith(".java"):
                               # -- SYNTAX REPAIR & STABILITY --
                               content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
                               content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
                               
-                              # Fix MDraw Rendering Crash (Off-by-one)
+                              # Fix MDraw Rendering Crash
                               content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
                               content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
                               
@@ -76,15 +107,16 @@ jobs:
                               content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
                                                         "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
                                                         
-                              # Fix Hardware Canvas Crash (Bitmap recycling)
-                              content = content.replace('bitmap.recycle();', '// bitmap.recycle();')
-                              content = content.replace('.recycle();', '// .recycle();')
+                              # SURGICAL Canvas Crash Fix (Targeted instead of global to prevent missing sprites)
+                              # Only disables recycle if it's tied to the specific Movie stream bug in older Android versions
+                              content = re.sub(r'if\s*\([^)]*mMovie\s*!=\s*null[^)]*\)\s*\{[^{}]*bitmap\.recycle\(\);[^{}]*\}', '/* movie recycle patched */', content)
 
                           with open(path, 'w', encoding='utf-8') as f:
                               f.write(content)
-                      except: pass
+                      except Exception as e: 
+                          print(f"Failed to process {file}: {e}")
 
-          # 3. Build-Time Random Icon
+          # 5. Build-Time Random Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
@@ -100,14 +132,11 @@ jobs:
                       os.makedirs(os.path.dirname(dest), exist_ok=True)
                       bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
 
-          # 4. Manifest Exported Fix (Android 12+ Compatibility)
+          # 6. Manifest Exported Fix
           m_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(m_path):
               with open(m_path, 'r', encoding='utf-8') as f: content = f.read()
-              
-              # Force exported="true" on ALL activities reliably
               content = re.sub(r'<activity([^>]*?)>', lambda m: f'<activity{m.group(1)}>' if 'android:exported' in m.group(1) else f'<activity{m.group(1)} android:exported="true">', content)
-                  
               with open(m_path, 'w', encoding='utf-8') as f: f.write(content)
           EOF
 
@@ -120,5 +149,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Stable-Final
+          name: WiiPM-Stable-Dynamic
           path: app/build/outputs/apk/app-debug.apk
