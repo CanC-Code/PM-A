@@ -3,7 +3,7 @@ name: Build WiiPM APK
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Allows you to run this manually
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,22 +20,30 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
       - name: Generate Dynamic Icons
         run: |
-          # If icon_source.png doesn't exist, we'll create a placeholder colored square
+          # Create a source if it's missing (using 'magick' instead of 'convert')
           if [ ! -f "icon_source.png" ]; then
-            convert -size 512x512 xc:blue icon_source.png
+            magick -size 512x512 xc:blue icon_source.png
           fi
           
           echo "Generating icons for all densities..."
-          # Paths based on your 'ls' output
-          convert icon_source.png -resize 48x48   app/src/main/res/mipmap-mdpi/ic_launcher.png
-          convert icon_source.png -resize 72x72   app/src/main/res/mipmap-hdpi/ic_launcher.png
-          convert icon_source.png -resize 96x96   app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          convert icon_source.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          # Overwriting existing placeholders in your res/mipmap folders
+          magick icon_source.png -resize 48x48   app/src/main/res/mipmap-mdpi/ic_launcher.png
+          magick icon_source.png -resize 72x72   app/src/main/res/mipmap-hdpi/ic_launcher.png
+          magick icon_source.png -resize 96x96   app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          magick icon_source.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
 
-      - name: Grant Execute Permission for Gradlew
-        run: chmod +x gradlew
+      - name: Sanitize Gradle Wrapper
+        run: |
+          # This ensures the wrapper is executable and fixes potential Windows line ending issues
+          chmod +x gradlew
+          sed -i 's/\r$//' gradlew
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
@@ -44,4 +52,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: WiiPM-Debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/*.apk
