@@ -13,114 +13,84 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Build Environment
+      - name: Set up Environment
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Legacy 32-bit Compatibility Libs
+      - name: Install 32-bit Libs
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y libncurses6:i386 libstdc++6:i386 zlib1g:i386
 
       - name: Install SDK 23
-        run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
+        run: echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
-      - name: Set up JDK 8 (Compile)
+      - name: Set up JDK 8
         uses: actions/setup-java@v4
         with:
           java-version: '8'
           distribution: 'temurin'
-          cache: gradle
 
-      - name: Surgical Source Patcher & Translator
+      - name: Global Translator & Logic Patch
         run: |
           pip install Pillow
           python - <<EOF
-          import os, random, re
-          from PIL import Image
-
-          # 1. Translation Dictionary (Chinese -> English)
+          import os, re
+          
+          # 1. Translation Dictionary
           translations = {
-              "提示": "Notice",
-              "是否确认退出游戏？": "Are you sure you want to quit?",
-              "取消": "Cancel",
-              "确认": "Confirm",
-              "开始游戏": "Start Game",
-              "退出游戏": "Exit Game",
-              "生命": "HP",
-              "攻击": "ATK",
-              "防御": "DEF",
-              "速度": "SPD",
-              "等级": "LVL",
-              "背包": "Bag"
+              "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
+              "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
+              "返 回": "Back", "编号": "No.", "职业": "Class", "地区": "Region",
+              "身份": "Rank", "属性": "Type", "特性": "Ability", "性格": "Nature",
+              "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
+              "生命": "HP", "重": "WT", "长": "HT", "蛋": "Egg", "遇": "Seen", "捕": "Got",
+              "体力回复": "Restore HP", "状态回复": "Restore Alt", "精灵球": "Pokéball",
+              "战斗用品": "Battle Item", "神奥": "Sinnoh", "冠军": "Champ", "训练师": "Trainer"
           }
 
-          def translate_file(file_path):
-              try:
-                  with open(file_path, 'r', encoding='utf-8') as f:
-                      content = f.read()
-                  for cn, en in translations.items():
-                      content = content.replace(cn, en)
-                  # Global Regex: Replace most Chinese characters with '...' to prevent crashes if unknown
-                  # content = re.sub(r'[\u4e00-\u9fff]+', '?', content) 
-                  with open(file_path, 'w', encoding='utf-8') as f:
-                      f.write(content)
-              except: pass
-
-          # 2. Global Code & Logic Patching
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
-                  
-                  # Apply Translations to Java and XML
                   if file.endswith((".java", ".xml")):
-                      translate_file(path)
+                      with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                          content = f.read()
+                      
+                      # Apply Translations
+                      for cn, en in translations.items():
+                          content = content.replace(cn, en)
+                      
+                      # Fix MDraw Loop Boundary Crash
+                      if file == "MDraw.java":
+                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+                          # Protect fonts
+                          content = re.sub(r'Typeface\.createFromAsset\(.*?\)', 'Typeface.DEFAULT', content)
 
-                  # Logic Fix: VData.java (Movement Crash)
-                  if file == "VData.java":
-                      with open(path, 'r') as f: content = f.read()
-                      # Add Null Check to ableMove to prevent crash on logicMap access
-                      content = content.replace(
-                          "if (MDraw.logicMap[y][x] > 2",
-                          "if (MDraw.logicMap != null && y >= 0 && y < MDraw.logicMap.length && x >= 0 && x < MDraw.logicMap[0].length && MDraw.logicMap[y][x] > 2"
-                      )
-                      with open(path, 'w') as f: f.write(content)
+                      # Fix VData LogicMap Crash
+                      if file == "VData.java":
+                          content = content.replace("MDraw.logicMap[y][x]", "((MDraw.logicMap != null && y < MDraw.logicMap.length && x < MDraw.logicMap[0].length) ? MDraw.logicMap[y][x] : 0)")
 
-                  # Logic Fix: Build/Manifest Compatibility
-                  if file == "build.gradle":
-                      with open(path, 'r') as f: content = f.read()
-                      content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
-                      content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
-                      with open(path, 'w') as f: f.write(content)
+                      # Manifest Exported Fix
+                      if file == "AndroidManifest.xml":
+                          if 'android:exported' not in content:
+                              content = content.replace('<activity', '<activity android:exported="true"')
 
-          # 3. Dynamic Icon Generation
-          sprite_dir = 'app/src/main/res/drawable-hdpi'
-          if os.path.exists(sprite_dir):
-              sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
-              chosen = random.choice(sprites) if sprites else None
-              if chosen:
-                  sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-                  bg = Image.new('RGBA', (512, 512), (255, 255, 255, 255))
-                  sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
-                  bg.paste(sprite_img, (56, 56), sprite_img)
-                  for folder, size in [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]:
-                      dest_dir = os.path.join('app/src/main/res', folder)
-                      os.makedirs(dest_dir, exist_ok=True)
-                      bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
+                      with open(path, 'w', encoding='utf-8') as f:
+                          f.write(content)
           EOF
 
-      - name: Build Debug APK
+      - name: Build APK
         run: |
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
           ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-English-Patched
+          name: WiiPM-English-Final
           path: app/build/outputs/apk/app-debug.apk
