@@ -44,7 +44,7 @@ jobs:
           import os, random, re
           from PIL import Image
 
-          # 1. Repository Fixes
+          # 1. Repository Fixes & Disable Buggy PNG Cruncher
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
@@ -53,29 +53,34 @@ jobs:
                           content = f.read()
                       content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
                       if 'android {' in content and 'aaptOptions' not in content:
-                          crunch_fix = "\n    aaptOptions { cruncherEnabled = false; useNewCruncher = false }\n"
+                          crunch_fix = "\n    aaptOptions {\n        cruncherEnabled = false\n        useNewCruncher = false\n    }\n"
                           content = content.replace('android {', 'android {' + crunch_fix)
                       with open(path, 'w') as f:
                           f.write(content)
 
-          # 2. Aggressive Manifest Fix for Android 12+
+          # 2. Surgical Manifest Fix (Avoid duplicates)
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
               
-              # Find ANY <activity tag that doesn't have exported and add it
-              if 'android:exported' not in content:
-                  # This pattern targets the Activity_Main more broadly
-                  content = re.sub(r'(<activity[^>]*?Activity_Main[^>]*?)(/?>)', r'\1 android:exported="true"\2', content)
-                  # If that didn't work, just hit all activities for safety
-                  content = content.replace('<activity', '<activity android:exported="true"')
-                  
-              with open(manifest_path, 'w') as f:
-                  f.write(content)
-              print("Forced android:exported='true' into all activities.")
+              # Find the main activity block
+              pattern = r'(<activity[^>]*?android:name="\.main\.Activity_Main"[^>]*?)'
+              match = re.search(pattern, content)
+              
+              if match:
+                  tag_content = match.group(1)
+                  if 'android:exported' not in tag_content:
+                      # Only add if it's missing to avoid [Fatal Error]
+                      new_tag = tag_content + ' android:exported="true"'
+                      content = content.replace(tag_content, new_tag)
+                      with open(manifest_path, 'w') as f:
+                          f.write(content)
+                      print("Surgically added android:exported='true'.")
+                  else:
+                      print("android:exported already exists, skipping.")
 
-          # 3. Icon Generation
+          # 3. Generate Random Pokémon Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
@@ -101,19 +106,16 @@ jobs:
           SLAVE_AAPT_TIMEOUT: 60
         run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
-      - name: Verify APK
+      - name: Final APK Verification
         run: |
           APK_FILE=$(find app/build/outputs/apk/ -name "app-debug.apk" | head -n 1)
-          echo "Verifying: $APK_FILE"
-          $ANDROID_HOME/build-tools/23.0.2/aapt dump badging "$APK_FILE" | grep "launchable-activity" || echo "Warning: Launchable activity not found in badging"
-          # Detailed XML dump to see what actually happened
-          $ANDROID_HOME/build-tools/23.0.2/aapt dump xmltree "$APK_FILE" AndroidManifest.xml > manifest_dump.txt
-          grep -C 2 "exported" manifest_dump.txt || echo "Warning: 'exported' attribute not found in compiled XML"
+          $ANDROID_HOME/build-tools/23.0.2/aapt dump badging "$APK_FILE" | grep "launchable-activity" || true
+          $ANDROID_HOME/build-tools/23.0.2/aapt dump xmltree "$APK_FILE" AndroidManifest.xml > final_manifest.txt
 
-      - name: Upload APK
+      - name: Upload APK & Final Manifest
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-LaunchFixed-Build
+          name: WiiPM-Surgical-Build
           path: |
             app/build/outputs/apk/app-debug.apk
-            manifest_dump.txt
+            final_manifest.txt
