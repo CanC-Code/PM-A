@@ -1,95 +1,52 @@
-name: Build WiiPM APK
-
-on:
-  push:
-    branches: [ "main", "master" ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  test:
+    needs: build
+    runs-on: macos-latest # macOS is required for emulator hardware acceleration
+    
     steps:
-      - name: Checkout Code
+      - name: checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17 (for SDK Manager)
-        uses: actions/setup-java@v4
+      - name: Download Built APK
+        uses: actions/download-artifact@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          name: WiiPM-Fixed-Launcher-APK
+          path: .
 
-      - name: Install Legacy Android SDK 23 & 32-bit Libs
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lib32z1 lib32ncurses6 lib32stdc++6
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
-
-      - name: Set up JDK 8 (for Build)
-        uses: actions/setup-java@v4
+      - name: Run Emulator and Check for Crashes
+        uses: reactivecircus/android-emulator-runner@v2
         with:
-          java-version: '8'
-          distribution: 'temurin'
-          cache: gradle
+          api-level: 23
+          target: default
+          arch: x86
+          profile: Nexus 6
+          script: |
+            # 1. Install the APK (finding it in the root from download-artifact)
+            APK_PATH=$(find . -name "*.apk" | head -n 1)
+            adb install "$APK_PATH"
+            
+            # 2. Clear logs and start the app
+            adb logcat -c
+            echo "Launching WiiPM..."
+            adb shell am start -n com.yurset.wiipm/com.yurset.wiipm.main.Activity_Main
+            
+            # 3. Wait for it to stabilize or crash
+            sleep 15
+            
+            # 4. Dump logs and search for fatal errors
+            adb logcat -d > full_log.txt
+            if grep -E "FATAL EXCEPTION|AndroidRuntime|ClassNotFoundException" full_log.txt; then
+              echo "------------------------------------------------"
+              echo "!!! CRASH DETECTED IN AUTOMATED TEST !!!"
+              echo "------------------------------------------------"
+              grep -A 20 -E "FATAL EXCEPTION|AndroidRuntime|ClassNotFoundException" full_log.txt
+              exit 1
+            else
+              echo "App launched without immediate fatal errors."
+            fi
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Optimize Repositories and Assets
-        run: |
-          pip install Pillow
-          python - <<EOF
-          import os, random
-          from PIL import Image
-
-          # 1. Fix Repositories & Disable Buggy PNG Cruncher
-          for root, dirs, files in os.walk("."):
-              for file in files:
-                  if file == "build.gradle":
-                      path = os.path.join(root, file)
-                      with open(path, 'r') as f:
-                          content = f.read()
-                      content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
-                      if 'android {' in content and 'aaptOptions' not in content:
-                          crunch_fix = "\n    aaptOptions {\n        cruncherEnabled = false\n        useNewCruncher = false\n    }\n"
-                          content = content.replace('android {', 'android {' + crunch_fix)
-                      with open(path, 'w') as f:
-                          f.write(content)
-
-          # 2. Generate Random Pokémon Icon
-          sprite_dir = 'app/src/main/res/drawable-hdpi'
-          if os.path.exists(sprite_dir):
-              sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
-              chosen = random.choice(sprites) if sprites else None
-              if chosen:
-                  sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-                  bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
-                  sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
-                  bg.paste(sprite_img, (56, 56), sprite_img)
-                  targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
-                  for folder, size in targets:
-                      dest_dir = os.path.join('app/src/main/res', folder)
-                      os.makedirs(dest_dir, exist_ok=True)
-                      bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
-          EOF
-
-      - name: Sanitize and Fix Gradle
-        run: |
-          sed -i 's/\r$//' gradlew
-          chmod +x gradlew
-
-      - name: Build Debug APK
-        env:
-          SLAVE_AAPT_TIMEOUT: 60
-        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
-
-      - name: Verify APK Location
-        run: find app/build/outputs/apk/ -name "*.apk"
-
-      - name: Upload APK
+      - name: Upload Test Logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Debug-APK
-          path: app/build/outputs/apk/*.apk
+          name: Smoke-Test-Logs
+          path: full_log.txt
