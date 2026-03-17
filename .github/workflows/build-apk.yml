@@ -21,10 +21,8 @@ jobs:
 
       - name: Install Legacy Android SDK 23 & 32-bit Libs
         run: |
-          # Old aapt often needs 32-bit libraries to run correctly on 64-bit Linux
           sudo apt-get update
           sudo apt-get install -y lib32z1 lib32ncurses6 lib32stdc++6
-          
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
       - name: Set up JDK 8 (for Build)
@@ -39,14 +37,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Optimize Project for Modern Build
+      - name: Optimize Repositories and Assets
         run: |
           pip install Pillow
           python - <<EOF
           import os, random
           from PIL import Image
 
-          # 1. Fix JCenter and Disable Buggy PNG Cruncher
+          # 1. Fix Repositories & Disable Buggy PNG Cruncher
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
@@ -54,29 +52,18 @@ jobs:
                       with open(path, 'r') as f:
                           content = f.read()
                       
-                      # Replace slow JCenter
+                      # Replace slow JCenter with explicit URLs
                       content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
                       
-                      # Inject aaptOptions to disable the crashing cruncher
+                      # Disable the cruncher that was timing out
                       if 'android {' in content and 'aaptOptions' not in content:
                           crunch_fix = "\n    aaptOptions {\n        cruncherEnabled = false\n        useNewCruncher = false\n    }\n"
                           content = content.replace('android {', 'android {' + crunch_fix)
                       
                       with open(path, 'w') as f:
                           f.write(content)
-                      print(f"Applied cruncher fix to {path}")
 
-          # 2. Legacy Storage Fix
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r') as f:
-                  content = f.read()
-              if 'android:requestLegacyExternalStorage' not in content:
-                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
-                  with open(manifest_path, 'w') as f:
-                      f.write(content)
-
-          # 3. Generate Random Pokémon Icon
+          # 2. Generate Random Pokémon Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
@@ -101,7 +88,6 @@ jobs:
 
       - name: Build Debug APK
         env:
-          # This tells the old build tools to wait much longer before giving up
           SLAVE_AAPT_TIMEOUT: 60
         run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
