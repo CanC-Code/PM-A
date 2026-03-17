@@ -1,4 +1,4 @@
-name: Build WiiPM Stable
+name: Build WiiPM Randomized
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install 32-bit Libs (Ubuntu 24.04)
+      - name: Install 32-bit Compatibility Libs
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
@@ -34,95 +34,92 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Mega-Patcher (Translation, Icons, & Stability)
+      - name: Mega-Patcher (Stability, Translation, & Random Icons)
         run: |
           pip install Pillow
           python - <<EOF
           import os, random, re
           from PIL import Image
 
-          # 1. Translation Dictionary
+          # 1. Translation Dictionary (Chinese -> English)
           translations = {
-              "图 鉴": "PokéDex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
+              "图 鉴": "PokéDex", "地 图": "Map", "通 信": "Comm", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
               "返 回": "Back", "属性": "Type", "特性": "Ability", "性格": "Nature",
               "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
               "生命": "HP", "编号": "No.", "职业": "Class", "地区": "Region", "身份": "Rank"
           }
 
-          # 2. Process Java Files Surgically
-          for root, dirs, files in os.walk("app/src/main/java"):
+          # 2. Process Files
+          for root, dirs, files in os.walk("."):
               for file in files:
-                  if file.endswith(".java"):
-                      path = os.path.join(root, file)
-                      with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                          lines = f.readlines()
-                      
-                      new_lines = []
-                      for line in lines:
-                          # Fix Font Crashes: Replace the whole assignment line if it contains createFromAsset
-                          if "Typeface.createFromAsset" in line:
-                              var_name = line.split('=')[0].strip()
-                              line = f"        {var_name} = Typeface.DEFAULT;\n"
+                  path = os.path.join(root, file)
+                  if file.endswith((".java", ".xml")):
+                      try:
+                          with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                              content = f.read()
                           
-                          # Fix MDraw Loop Boundary
-                          if "yy <= VData.allSIZE.y + 1" in line:
-                              line = line.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                          if "xx <= VData.allSIZE.x + 1" in line:
-                              line = line.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                          
-                          # Fix Division by Zero in VData
-                          if "landMap.baseCity[iniLocate] / landMap.baseX" in line:
-                              line = line.replace("landMap.baseX", "(landMap.baseX > 0 ? landMap.baseX : 1)")
-
-                          # Apply Translations
+                          # -- TRANSLATION --
                           for cn, en in translations.items():
-                              line = line.replace(f'"{cn}"', f'"{en}"')
+                              content = content.replace(cn, en)
                           
-                          new_lines.append(line)
-                      
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.writelines(new_lines)
+                          # -- STABILITY FIXES --
+                          # Fix Font Crashes (Surgical regex for nested calls)
+                          content = re.sub(r'Typeface\.createFromAsset\(.*?\)', 'Typeface.DEFAULT', content, flags=re.DOTALL)
+                          
+                          # Fix MDraw Loop Boundary Crash (IndexOutOfBounds)
+                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+                          
+                          # Fix UGifView NullPointer (Remove buggy bitmap recycle logic)
+                          content = re.sub(r'if \(mMovie != null\) \{.*?bitmap\.recycle\(\);.*?\}', '', content, flags=re.DOTALL)
 
-          # 3. Build-Time Icon Randomizer
+                          # Fix VData Division by Zero risk
+                          content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
+                                                    "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
+
+                          with open(path, 'w', encoding='utf-8') as f:
+                              f.write(content)
+                      except: pass
+
+          # 3. Build-Time Random Icon Generation
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
-              # Find all sprites starting with 'pm' or 'sprite'
+              # Find Pokémon sprites (pmXXX.png or spritexXX.png)
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
               if sprites:
                   chosen = random.choice(sprites)
-                  print(f"Randomly selected icon: {chosen}")
-                  sprite_path = os.path.join(sprite_dir, chosen)
-                  img = Image.open(sprite_path).convert("RGBA")
+                  print(f"Selected random icon: {chosen}")
+                  img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
                   
-                  # Create high-quality icon on white background
+                  # Create a 512x512 icon with the Pokémon centered on a white background
                   bg = Image.new('RGBA', (512, 512), (255, 255, 255, 255))
                   img_resized = img.resize((400, 400), Image.Resampling.NEAREST)
                   bg.paste(img_resized, (56, 56), img_resized)
                   
-                  # Replace all launcher icons
+                  # Generate all necessary densities
                   for folder, size in [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]:
-                      dest = os.path.join('app/src/main/res', folder, 'ic_launcher.png')
-                      os.makedirs(os.path.dirname(dest), exist_ok=True)
-                      bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
+                      dest_dir = os.path.join('app/src/main/res', folder)
+                      os.makedirs(dest_dir, exist_ok=True)
+                      bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
 
-          # 4. Manifest Exported Fix
-          m_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(m_path):
-              with open(m_path, 'r') as f: content = f.read()
+          # 4. Manifest Modernization
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r') as f: content = f.read()
               if 'android:exported' not in content:
                   content = content.replace('android:name=".main.Activity_Main"', 'android:name=".main.Activity_Main" android:exported="true"')
-              with open(m_path, 'w') as f: f.write(content)
+              with open(manifest_path, 'w') as f: f.write(content)
           EOF
 
-      - name: Build APK
+      - name: Build Debug APK
         run: |
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
           ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
-      - name: Upload Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-RandomIcon-Build
+          name: WiiPM-English-Randomized
           path: app/build/outputs/apk/app-debug.apk
