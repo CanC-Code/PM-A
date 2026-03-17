@@ -20,30 +20,56 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Install ImageMagick
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y imagemagick
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Pillow
+        run: pip install Pillow
 
       - name: Generate Dynamic Icons
         run: |
-          # Create a source if it's missing (using 'magick' instead of 'convert')
-          if [ ! -f "icon_source.png" ]; then
-            magick -size 512x512 xc:blue icon_source.png
-          fi
-          
-          echo "Generating icons for all densities..."
-          # Overwriting existing placeholders in your res/mipmap folders
-          magick icon_source.png -resize 48x48   app/src/main/res/mipmap-mdpi/ic_launcher.png
-          magick icon_source.png -resize 72x72   app/src/main/res/mipmap-hdpi/ic_launcher.png
-          magick icon_source.png -resize 96x96   app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          magick icon_source.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          python - <<EOF
+          import os
+          from PIL import Image, ImageDraw
 
-      - name: Sanitize Gradle Wrapper
+          # 1. Create source icon if it doesn't exist
+          source_path = 'icon_source.png'
+          if not os.path.exists(source_path):
+              print("Creating placeholder blue icon...")
+              img = Image.new('RGB', (512, 512), color=(0, 120, 215))
+              img.save(source_path)
+
+          # 2. Define targets based on your project structure
+          # Format: (folder_name, size_in_pixels)
+          targets = [
+              ('mipmap-mdpi', 48),
+              ('mipmap-hdpi', 72),
+              ('mipmap-xhdpi', 96),
+              ('mipmap-xxhdpi', 144),
+          ]
+
+          base_res_path = 'app/src/main/res'
+          source_img = Image.open(source_path)
+
+          for folder, size in targets:
+              dest_dir = os.path.join(base_res_path, folder)
+              os.makedirs(dest_dir, exist_ok=True)
+              dest_path = os.path.join(dest_dir, 'ic_launcher.png')
+              
+              print(f"Generating {dest_path} ({size}x{size})...")
+              resized = source_img.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(dest_path)
+          EOF
+
+      - name: Sanitize and Fix Gradle
         run: |
-          # This ensures the wrapper is executable and fixes potential Windows line ending issues
-          chmod +x gradlew
+          # Fix potential Windows line endings and ensure execution bits
           sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+          # Ensure the wrapper directory exists (though your ls showed it does)
+          mkdir -p gradle/wrapper
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
