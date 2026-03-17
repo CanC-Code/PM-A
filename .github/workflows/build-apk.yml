@@ -19,12 +19,12 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Legacy 32-bit Compatibility Libs
+      - name: Install Legacy 32-bit Compatibility Libs (Ubuntu 24.04)
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          # zlib1g:i386 is the specific fix for the libz.so.1 error
-          sudo apt-get install -y libncurses5:i386 libstdc++6:i386 zlib1g:i386
+          # Changed libncurses5:i386 to libncurses6:i386 for Ubuntu 24.04 compatibility
+          sudo apt-get install -y libncurses6:i386 libstdc++6:i386 zlib1g:i386
 
       - name: Install SDK 23
         run: |
@@ -44,7 +44,7 @@ jobs:
           import os, random, re
           from PIL import Image
 
-          # 1. Global build.gradle Patch (Repos & Target SDK)
+          # 1. Global build.gradle Patch
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
@@ -57,33 +57,33 @@ jobs:
                           content = content.replace('android {', 'android {\n    aaptOptions { cruncherEnabled = false; useNewCruncher = false }\n')
                       with open(path, 'w') as f: f.write(content)
 
-          # 2. Manifest Launch Fix
+          # 2. Manifest Launch & Permissions Fix
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f: content = f.read()
               if 'android:exported' not in content:
                   content = content.replace('<activity', '<activity android:exported="true"')
+              if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
+                  perms = '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />'
+                  content = content.replace('<application', perms + '\n    <application')
               with open(manifest_path, 'w') as f: f.write(content)
 
-          # 3. IMain.java Font Loading Fix
-          # If fonts fail to load, the app crashes. We add a try-catch fallback.
+          # 3. IMain & UGifView Logic Patch
+          # Protection for font loading
           imain_path = 'app/src/main/java/com/yurset/wiipm/main/IMain.java'
           if os.path.exists(imain_path):
               with open(imain_path, 'r') as f: content = f.read()
-              # Wrap font loading in try-catch to prevent launch crashes
-              font_fix = """
-                try {
-                    mFace0 = Typeface.createFromAsset(getContext().getAssets(), "fonts/lewime.ttf");
-                    mFace1 = Typeface.createFromAsset(getContext().getAssets(), "fonts/moonlight.ttf");
-                } catch (Exception e) {
-                    mFace0 = Typeface.DEFAULT;
-                    mFace1 = Typeface.DEFAULT;
-                }
-              """
-              # Replace the two assignment lines with the protected block
+              font_fix = "try { mFace0 = Typeface.createFromAsset(getContext().getAssets(), \"fonts/lewime.ttf\"); mFace1 = Typeface.createFromAsset(getContext().getAssets(), \"fonts/moonlight.ttf\"); } catch (Exception e) { mFace0 = Typeface.DEFAULT; mFace1 = Typeface.DEFAULT; }"
               content = re.sub(r'mFace0 = Typeface\.createFromAsset\(.*?\);', '', content)
               content = re.sub(r'mFace1 = Typeface\.createFromAsset\(.*?\);', font_fix, content)
               with open(imain_path, 'w') as f: f.write(content)
+
+          # Remove buggy bitmap.recycle()
+          gif_path = 'app/src/main/java/com/yurset/wiipm/base/UGifView.java'
+          if os.path.exists(gif_path):
+              with open(gif_path, 'r') as f: content = f.read()
+              content = re.sub(r'if \(mMovie != null\) \{.*?bitmap\.recycle\(\);.*?\}', '', content, flags=re.DOTALL)
+              with open(gif_path, 'w') as f: f.write(content)
 
           # 4. Icon Generation
           sprite_dir = 'app/src/main/res/drawable-hdpi'
