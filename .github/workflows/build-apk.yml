@@ -13,19 +13,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # We need 17 first because the modern 'sdkmanager' won't run on Java 8
       - name: Set up JDK 17 (for SDK Manager)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Legacy Android SDK 23
+      - name: Install Legacy Android SDK 23 & Build Tools 23.0.2
         run: |
-          # Use Java 17 to run the manager and install API 23
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.1"
+          # Installing the exact version 23.0.2 that your project requested
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
-      # NOW we switch the environment to Java 8 for the actual compilation
       - name: Set up JDK 8 (for Build)
         uses: actions/setup-java@v4
         with:
@@ -38,12 +36,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Generate Dynamic Pokémon Icon
+      - name: Dynamic Assets & Legacy Fix
         run: |
           pip install Pillow
           python - <<EOF
-          import os, random
+          import os, random, re
           from PIL import Image
+
+          # 1. Random Pokémon Icon Generation
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
           if sprites:
@@ -51,15 +51,28 @@ jobs:
               sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
           else:
               sprite_img = Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
+          
           bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
           sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
           bg.paste(sprite_img, (56, 56), sprite_img)
-          bg.save('icon_source.png')
+          
           targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
           for folder, size in targets:
               dest_dir = os.path.join('app/src/main/res', folder)
               os.makedirs(dest_dir, exist_ok=True)
               bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
+
+          # 2. Modern Android Compatibility Hack
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r') as f:
+                  content = f.read()
+              # Inject legacy storage support into the <application> tag
+              if 'android:requestLegacyExternalStorage' not in content:
+                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                  with open(manifest_path, 'w') as f:
+                      f.write(content)
+                  print("Injected legacy storage support.")
           EOF
 
       - name: Sanitize and Fix Gradle
@@ -68,7 +81,6 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        # Ensure Gradle uses Java 8 even if the system defaults to something else
         run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME
 
       - name: Upload APK
