@@ -34,53 +34,59 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Global Translator & Logic Patch
+      - name: Surgical Translator & Logic Patch
         run: |
           pip install Pillow
           python - <<EOF
           import os, re
-          
-          # 1. Translation Dictionary
+          from PIL import Image
+
+          # 1. Core Translation Mapping
           translations = {
-              "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
+              "图 鉴": "PokéDex", "地 图": "Map", "通 信": "Comm", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
               "返 回": "Back", "编号": "No.", "职业": "Class", "地区": "Region",
               "身份": "Rank", "属性": "Type", "特性": "Ability", "性格": "Nature",
               "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
-              "生命": "HP", "重": "WT", "长": "HT", "蛋": "Egg", "遇": "Seen", "捕": "Got",
-              "体力回复": "Restore HP", "状态回复": "Restore Alt", "精灵球": "Pokéball",
-              "战斗用品": "Battle Item", "神奥": "Sinnoh", "冠军": "Champ", "训练师": "Trainer"
+              "生命": "HP", "物防": "DEF", "重": "WT", "长": "HT", "蛋": "Egg",
+              "遇": "Seen", "捕": "Got", "体力回复": "Restore HP", "状态回复": "Heal Status",
+              "精灵球": "Pokéball", "战斗用品": "Battle Item", "神奥": "Sinnoh",
+              "冠军": "Champ", "训练师": "Trainer", "家乡": "Home", "一城": "City 1",
+              "二城": "City 2", "郊野": "Wilds", "森林": "Forest", "山区": "Mountain"
           }
 
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
                   if file.endswith((".java", ".xml")):
-                      with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                          content = f.read()
-                      
-                      # Apply Translations
-                      for cn, en in translations.items():
-                          content = content.replace(cn, en)
-                      
-                      # Fix MDraw Loop Boundary Crash
-                      if file == "MDraw.java":
-                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                          # Protect fonts
-                          content = re.sub(r'Typeface\.createFromAsset\(.*?\)', 'Typeface.DEFAULT', content)
+                      try:
+                          with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                              content = f.read()
+                          
+                          # Global String Translation
+                          for cn, en in translations.items():
+                              content = content.replace(cn, en)
+                          
+                          # MDraw: Fix Multiline Font Crash & Loop Boundary Crash
+                          if file == "MDraw.java":
+                              # Surgical Font Fix (re.DOTALL handles newlines)
+                              content = re.sub(r'Typeface\.createFromAsset\(.*?\)\)', 'Typeface.DEFAULT)', content, flags=re.DOTALL)
+                              # Loop Fix (Change <= ... + 1 to < ... to prevent IndexOutOfBounds)
+                              content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                              content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
 
-                      # Fix VData LogicMap Crash
-                      if file == "VData.java":
-                          content = content.replace("MDraw.logicMap[y][x]", "((MDraw.logicMap != null && y < MDraw.logicMap.length && x < MDraw.logicMap[0].length) ? MDraw.logicMap[y][x] : 0)")
+                          # VData: Add Defensive Null Check for movement
+                          if file == "VData.java":
+                              content = content.replace("MDraw.logicMap[y][x]", "((MDraw.logicMap != null && y < MDraw.logicMap.length && x < MDraw.logicMap[0].length) ? MDraw.logicMap[y][x] : 0)")
 
-                      # Manifest Exported Fix
-                      if file == "AndroidManifest.xml":
-                          if 'android:exported' not in content:
-                              content = content.replace('<activity', '<activity android:exported="true"')
+                          # Build.gradle: Modern Repos
+                          if file == "build.gradle":
+                              content = content.replace("jcenter()", "mavenCentral()")
+                              content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
 
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.write(content)
+                          with open(path, 'w', encoding='utf-8') as f:
+                              f.write(content)
+                      except Exception as e: print(f"Skipping {file}: {e}")
           EOF
 
       - name: Build APK
@@ -92,5 +98,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-English-Final
+          name: WiiPM-English-Build
           path: app/build/outputs/apk/app-debug.apk
