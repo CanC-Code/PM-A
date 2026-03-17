@@ -19,8 +19,12 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Legacy Android SDK 23 & Build Tools 23.0.2
+      - name: Install Legacy Android SDK 23 & 32-bit Libs
         run: |
+          # Old aapt often needs 32-bit libraries to run correctly on 64-bit Linux
+          sudo apt-get update
+          sudo apt-get install -y lib32z1 lib32ncurses6 lib32stdc++6
+          
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
       - name: Set up JDK 8 (for Build)
@@ -35,15 +39,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Optimize Repositories and Assets
+      - name: Optimize Project for Modern Build
         run: |
           pip install Pillow
           python - <<EOF
           import os, random
           from PIL import Image
 
-          # 1. Fix JCenter/Google Repository Shorthand
-          # Gradle 2.2.1 doesn't know google(), it needs the full maven URL
+          # 1. Fix JCenter and Disable Buggy PNG Cruncher
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file == "build.gradle":
@@ -51,14 +54,19 @@ jobs:
                       with open(path, 'r') as f:
                           content = f.read()
                       
-                      # Replace JCenter with explicit Maven Central and Google URLs
-                      new_content = content.replace("jcenter()", "mavenCentral()\n        maven { url 'https://maven.google.com' }")
+                      # Replace slow JCenter
+                      content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
+                      
+                      # Inject aaptOptions to disable the crashing cruncher
+                      if 'android {' in content and 'aaptOptions' not in content:
+                          crunch_fix = "\n    aaptOptions {\n        cruncherEnabled = false\n        useNewCruncher = false\n    }\n"
+                          content = content.replace('android {', 'android {' + crunch_fix)
                       
                       with open(path, 'w') as f:
-                          f.write(new_content)
-                      print(f"Optimized repositories in {path}")
+                          f.write(content)
+                      print(f"Applied cruncher fix to {path}")
 
-          # 2. Legacy Storage & Manifest Fix
+          # 2. Legacy Storage Fix
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
@@ -73,16 +81,17 @@ jobs:
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
               chosen = random.choice(sprites) if sprites else None
-              sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA") if chosen else Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
-              bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
-              sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
-              bg.paste(sprite_img, (56, 56), sprite_img)
-              
-              targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
-              for folder, size in targets:
-                  dest_dir = os.path.join('app/src/main/res', folder)
-                  os.makedirs(dest_dir, exist_ok=True)
-                  bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
+              if chosen:
+                  sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
+                  bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
+                  sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
+                  bg.paste(sprite_img, (56, 56), sprite_img)
+                  
+                  targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
+                  for folder, size in targets:
+                      dest_dir = os.path.join('app/src/main/res', folder)
+                      os.makedirs(dest_dir, exist_ok=True)
+                      bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
           EOF
 
       - name: Sanitize and Fix Gradle
@@ -91,6 +100,9 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
+        env:
+          # This tells the old build tools to wait much longer before giving up
+          SLAVE_AAPT_TIMEOUT: 60
         run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
       - name: Upload APK
