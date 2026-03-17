@@ -1,4 +1,4 @@
-name: Build WiiPM Randomized
+name: Build WiiPM Stable
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install 32-bit Compatibility Libs
+      - name: Install 32-bit Libs
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
@@ -34,23 +34,23 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Mega-Patcher (Stability, Translation, & Random Icons)
+      - name: Surgical Mega-Patcher
         run: |
           pip install Pillow
           python - <<EOF
           import os, random, re
           from PIL import Image
 
-          # 1. Translation Dictionary (Chinese -> English)
+          # 1. Translation Dictionary
           translations = {
-              "图 鉴": "PokéDex", "地 图": "Map", "通 信": "Comm", "记 录": "Save",
+              "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
               "返 回": "Back", "属性": "Type", "特性": "Ability", "性格": "Nature",
               "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
               "生命": "HP", "编号": "No.", "职业": "Class", "地区": "Region", "身份": "Rank"
           }
 
-          # 2. Process Files
+          # 2. Process Files with Syntax Awareness
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
@@ -63,18 +63,19 @@ jobs:
                           for cn, en in translations.items():
                               content = content.replace(cn, en)
                           
-                          # -- STABILITY FIXES --
-                          # Fix Font Crashes (Surgical regex for nested calls)
-                          content = re.sub(r'Typeface\.createFromAsset\(.*?\)', 'Typeface.DEFAULT', content, flags=re.DOTALL)
+                          # -- SYNTAX REPAIR & STABILITY --
+                          # Fix Font Crashes: Replace the whole call chain ending in ')'
+                          # This handles: Typeface.createFromAsset(x, y) AND Typeface.createFromAsset(x, y).getAnything()
+                          content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
                           
-                          # Fix MDraw Loop Boundary Crash (IndexOutOfBounds)
+                          # Repair the specific comma/semicolon errors from previous runs
+                          content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
+                          
+                          # Fix MDraw Rendering Crash (Off-by-one)
                           content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
                           content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
                           
-                          # Fix UGifView NullPointer (Remove buggy bitmap recycle logic)
-                          content = re.sub(r'if \(mMovie != null\) \{.*?bitmap\.recycle\(\);.*?\}', '', content, flags=re.DOTALL)
-
-                          # Fix VData Division by Zero risk
+                          # Fix VData Division by Zero
                           content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
                                                     "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
 
@@ -82,34 +83,29 @@ jobs:
                               f.write(content)
                       except: pass
 
-          # 3. Build-Time Random Icon Generation
+          # 3. Build-Time Random Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
-              # Find Pokémon sprites (pmXXX.png or spritexXX.png)
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
               if sprites:
                   chosen = random.choice(sprites)
-                  print(f"Selected random icon: {chosen}")
+                  print(f"Branding build with icon: {chosen}")
                   img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-                  
-                  # Create a 512x512 icon with the Pokémon centered on a white background
                   bg = Image.new('RGBA', (512, 512), (255, 255, 255, 255))
-                  img_resized = img.resize((400, 400), Image.Resampling.NEAREST)
-                  bg.paste(img_resized, (56, 56), img_resized)
-                  
-                  # Generate all necessary densities
+                  img_res = img.resize((400, 400), Image.Resampling.NEAREST)
+                  bg.paste(img_res, (56, 56), img_res)
                   for folder, size in [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]:
-                      dest_dir = os.path.join('app/src/main/res', folder)
-                      os.makedirs(dest_dir, exist_ok=True)
-                      bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
+                      dest = os.path.join('app/src/main/res', folder, 'ic_launcher.png')
+                      os.makedirs(os.path.dirname(dest), exist_ok=True)
+                      bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
 
-          # 4. Manifest Modernization
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r') as f: content = f.read()
+          # 4. Manifest Exported Fix (Android 12+ Compatibility)
+          m_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(m_path):
+              with open(m_path, 'r') as f: content = f.read()
               if 'android:exported' not in content:
                   content = content.replace('android:name=".main.Activity_Main"', 'android:name=".main.Activity_Main" android:exported="true"')
-              with open(manifest_path, 'w') as f: f.write(content)
+              with open(m_path, 'w') as f: f.write(content)
           EOF
 
       - name: Build Debug APK
@@ -118,8 +114,8 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-English-Randomized
+          name: WiiPM-Stable-Final
           path: app/build/outputs/apk/app-debug.apk
