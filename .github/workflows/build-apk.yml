@@ -63,21 +63,22 @@ jobs:
                           for cn, en in translations.items():
                               content = content.replace(cn, en)
                           
-                          # -- SYNTAX REPAIR & STABILITY --
-                          # Fix Font Crashes: Replace the whole call chain ending in ')'
-                          # This handles: Typeface.createFromAsset(x, y) AND Typeface.createFromAsset(x, y).getAnything()
-                          content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
-                          
-                          # Repair the specific comma/semicolon errors from previous runs
-                          content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
-                          
-                          # Fix MDraw Rendering Crash (Off-by-one)
-                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                          
-                          # Fix VData Division by Zero
-                          content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
-                                                    "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
+                          if file.endswith(".java"):
+                              # -- SYNTAX REPAIR & STABILITY --
+                              content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
+                              content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
+                              
+                              # Fix MDraw Rendering Crash (Off-by-one)
+                              content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                              content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+                              
+                              # Fix VData Division by Zero
+                              content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
+                                                        "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
+                                                        
+                              # Fix Hardware Canvas Crash (Bitmap recycling)
+                              content = content.replace('bitmap.recycle();', '// bitmap.recycle();')
+                              content = content.replace('.recycle();', '// .recycle();')
 
                           with open(path, 'w', encoding='utf-8') as f:
                               f.write(content)
@@ -99,13 +100,19 @@ jobs:
                       os.makedirs(os.path.dirname(dest), exist_ok=True)
                       bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
 
-          # 4. Manifest Exported Fix (Android 12+ Compatibility)
+          # 4. Manifest Exported Fix & Storage Rights (Android 10-14 Compatibility)
           m_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(m_path):
-              with open(m_path, 'r') as f: content = f.read()
-              if 'android:exported' not in content:
-                  content = content.replace('android:name=".main.Activity_Main"', 'android:name=".main.Activity_Main" android:exported="true"')
-              with open(m_path, 'w') as f: f.write(content)
+              with open(m_path, 'r', encoding='utf-8') as f: content = f.read()
+              
+              # Force exported="true" on ALL activities reliably
+              content = re.sub(r'<activity([^>]*?)>', lambda m: f'<activity{m.group(1)}>' if 'android:exported' in m.group(1) else f'<activity{m.group(1)} android:exported="true">', content)
+              
+              # Add legacy storage support (prevents instant crash when trying to access save files)
+              if 'requestLegacyExternalStorage' not in content:
+                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true" ')
+                  
+              with open(m_path, 'w', encoding='utf-8') as f: f.write(content)
           EOF
 
       - name: Build Debug APK
