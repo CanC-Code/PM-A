@@ -21,7 +21,6 @@ jobs:
 
       - name: Install Legacy Android SDK 23 & Build Tools 23.0.2
         run: |
-          # Installing the exact version 23.0.2 that your project requested
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.2"
 
       - name: Set up JDK 8 (for Build)
@@ -31,27 +30,46 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Set up Python & Generate Icon
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Dynamic Assets & Legacy Fix
+      - name: Optimize Repositories and Assets
         run: |
           pip install Pillow
           python - <<EOF
-          import os, random, re
+          import os, random
           from PIL import Image
 
-          # 1. Random Pokémon Icon Generation
+          # 1. Fix JCenter Bottleneck (Replaces slow JCenter with MavenCentral/Google)
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file == "build.gradle":
+                      path = os.path.join(root, file)
+                      with open(path, 'r') as f:
+                          content = f.read()
+                      # Prioritize google() and mavenCentral() over jcenter()
+                      new_content = content.replace("jcenter()", "google()\n        mavenCentral()")
+                      with open(path, 'w') as f:
+                          f.write(new_content)
+                      print(f"Optimized repositories in {path}")
+
+          # 2. Legacy Storage & Manifest Fix
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r') as f:
+                  content = f.read()
+              if 'android:requestLegacyExternalStorage' not in content:
+                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                  with open(manifest_path, 'w') as f:
+                      f.write(content)
+
+          # 3. Generate Random Pokémon Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
-          if sprites:
-              chosen = random.choice(sprites)
-              sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-          else:
-              sprite_img = Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
-          
+          chosen = random.choice(sprites) if sprites else None
+          sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA") if chosen else Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
           bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
           sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
           bg.paste(sprite_img, (56, 56), sprite_img)
@@ -61,18 +79,6 @@ jobs:
               dest_dir = os.path.join('app/src/main/res', folder)
               os.makedirs(dest_dir, exist_ok=True)
               bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
-
-          # 2. Modern Android Compatibility Hack
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r') as f:
-                  content = f.read()
-              # Inject legacy storage support into the <application> tag
-              if 'android:requestLegacyExternalStorage' not in content:
-                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
-                  with open(manifest_path, 'w') as f:
-                      f.write(content)
-                  print("Injected legacy storage support.")
           EOF
 
       - name: Sanitize and Fix Gradle
@@ -81,7 +87,8 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME
+        # Increased heap size for old Gradle versions to prevent memory timeouts
+        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME -Dorg.gradle.jvmargs="-Xmx2048m"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
