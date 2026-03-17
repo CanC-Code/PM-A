@@ -52,38 +52,32 @@ jobs:
                       with open(path, 'r') as f:
                           content = f.read()
                       content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
-                      # Bump targetSdkVersion to 26 for better compatibility with newer OS versions
+                      # Bump targetSdkVersion to 26 for better OS compatibility
                       content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
                       if 'android {' in content and 'aaptOptions' not in content:
                           content = content.replace('android {', 'android {\n    aaptOptions { cruncherEnabled = false; useNewCruncher = false }\n')
                       with open(path, 'w') as f:
                           f.write(content)
 
-          # 2. Selective Manifest Fix
+          # 2. Manifest Fix for Launch Compatibility
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   content = f.read()
               
-              # Inject Permissions
+              # Inject Storage Permissions
               if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
                   perms = '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />'
                   content = content.replace('<application', perms + '\n    <application')
               
               # Add exported="true" ONLY to the main activity if it is missing
-              # This uses a regex to check for the attribute within the Activity_Main tag specifically
-              activity_pattern = r'(<activity[^>]*?android:name="\.main\.Activity_Main"[^>]*?)>'
-              def add_exported(match):
+              activity_pattern = r'(<activity[^>]*?android:name="\.main\.Activity_Main"[^>]*?)'
+              match = re.search(activity_pattern, content)
+              if match:
                   tag = match.group(1)
                   if 'android:exported' not in tag:
-                      return tag + ' android:exported="true">'
-                  return tag + '>'
-              
-              content = re.sub(activity_pattern, add_exported, content)
-              
-              # Add Legacy Storage Support
-              if 'requestLegacyExternalStorage' not in content:
-                  content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"')
+                      content = content.replace(tag, tag + ' android:exported="true"')
+                      print("Injected exported=true into Activity_Main.")
 
               with open(manifest_path, 'w') as f:
                   f.write(content)
@@ -95,7 +89,6 @@ jobs:
               chosen = random.choice(sprites) if sprites else None
               if chosen:
                   sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
-                  # FIX: Size must be a 2-tuple (width, height)
                   bg = Image.new('RGBA', (512, 512), (255, 255, 255, 255))
                   sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
                   bg.paste(sprite_img, (56, 56), sprite_img)
@@ -118,5 +111,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Compatibility-Build
+          name: WiiPM-Build
           path: app/build/outputs/apk/app-debug.apk
