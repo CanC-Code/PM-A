@@ -13,65 +13,53 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 8
+      # We need 17 first because the modern 'sdkmanager' won't run on Java 8
+      - name: Set up JDK 17 (for SDK Manager)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Legacy Android SDK 23
+        run: |
+          # Use Java 17 to run the manager and install API 23
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.1"
+
+      # NOW we switch the environment to Java 8 for the actual compilation
+      - name: Set up JDK 8 (for Build)
         uses: actions/setup-java@v4
         with:
           java-version: '8'
           distribution: 'temurin'
           cache: gradle
 
-      - name: Install Android SDK Components
-        run: |
-          # Use the pre-installed sdkmanager to get the old platform
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-23" "build-tools;23.0.1"
-          # Sometimes the path varies on runners, fallback to the standard tools path if latest isn't there
-          if [ $? -ne 0 ]; then
-            echo "y" | $ANDROID_HOME/tools/bin/sdkmanager "platforms;android-23" "build-tools;23.0.1"
-          fi
-
-      - name: Set up Python
+      - name: Set up Python & Generate Icon
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Install Pillow
-        run: pip install Pillow
-
       - name: Generate Dynamic Pokémon Icon
         run: |
+          pip install Pillow
           python - <<EOF
           import os, random
           from PIL import Image
-
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
-          
           if sprites:
               chosen = random.choice(sprites)
-              print(f"I choose you, {chosen}!")
               sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
           else:
-              print("No sprites found, using fallback blue.")
               sprite_img = Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
-
           bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
           sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
           bg.paste(sprite_img, (56, 56), sprite_img)
           bg.save('icon_source.png')
-
-          targets = [
-              ('mipmap-mdpi', 48),
-              ('mipmap-hdpi', 72),
-              ('mipmap-xhdpi', 96),
-              ('mipmap-xxhdpi', 144),
-          ]
-
-          base_res_path = 'app/src/main/res'
+          targets = [('mipmap-mdpi', 48), ('mipmap-hdpi', 72), ('mipmap-xhdpi', 96), ('mipmap-xxhdpi', 144)]
           for folder, size in targets:
-              dest_dir = os.path.join(base_res_path, folder)
+              dest_dir = os.path.join('app/src/main/res', folder)
               os.makedirs(dest_dir, exist_ok=True)
-              resized = bg.resize((size, size), Image.Resampling.LANCZOS)
-              resized.save(os.path.join(dest_dir, 'ic_launcher.png'))
+              bg.resize((size, size), Image.Resampling.LANCZOS).save(os.path.join(dest_dir, 'ic_launcher.png'))
           EOF
 
       - name: Sanitize and Fix Gradle
@@ -80,7 +68,8 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        # Ensure Gradle uses Java 8 even if the system defaults to something else
+        run: ./gradlew assembleDebug -Dorg.gradle.java.home=$JAVA_HOME
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
