@@ -13,10 +13,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 8
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '8' # downgraded for Gradle 2.2.1 compatibility
           distribution: 'temurin'
           cache: gradle
 
@@ -28,21 +28,33 @@ jobs:
       - name: Install Pillow
         run: pip install Pillow
 
-      - name: Generate Dynamic Icons
+      - name: Generate Dynamic Pokémon Icon
         run: |
           python - <<EOF
-          import os
-          from PIL import Image, ImageDraw
+          import os, random
+          from PIL import Image
 
-          # 1. Create source icon if it doesn't exist
-          source_path = 'icon_source.png'
-          if not os.path.exists(source_path):
-              print("Creating placeholder blue icon...")
-              img = Image.new('RGB', (512, 512), color=(0, 120, 215))
-              img.save(source_path)
+          # 1. Pick a random Pokémon sprite from your own assets
+          sprite_dir = 'app/src/main/res/drawable-hdpi'
+          sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
+          
+          if sprites:
+              chosen = random.choice(sprites)
+              print(f"I choose you, {chosen}!")
+              sprite_img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
+          else:
+              print("No sprites found, using fallback blue.")
+              sprite_img = Image.new('RGBA', (128, 128), color=(0, 120, 215, 255))
 
-          # 2. Define targets based on your project structure
-          # Format: (folder_name, size_in_pixels)
+          # 2. Create the base icon (512x512)
+          bg = Image.new('RGBA', (512, 512), color=(255, 255, 255, 255))
+          
+          # Scale sprite up and center it
+          sprite_img = sprite_img.resize((400, 400), Image.Resampling.NEAREST)
+          bg.paste(sprite_img, (56, 56), sprite_img)
+          bg.save('icon_source.png')
+
+          # 3. Generate all Android densities
           targets = [
               ('mipmap-mdpi', 48),
               ('mipmap-hdpi', 72),
@@ -51,25 +63,17 @@ jobs:
           ]
 
           base_res_path = 'app/src/main/res'
-          source_img = Image.open(source_path)
-
           for folder, size in targets:
               dest_dir = os.path.join(base_res_path, folder)
               os.makedirs(dest_dir, exist_ok=True)
-              dest_path = os.path.join(dest_dir, 'ic_launcher.png')
-              
-              print(f"Generating {dest_path} ({size}x{size})...")
-              resized = source_img.resize((size, size), Image.Resampling.LANCZOS)
-              resized.save(dest_path)
+              resized = bg.resize((size, size), Image.Resampling.LANCZOS)
+              resized.save(os.path.join(dest_dir, 'ic_launcher.png'))
           EOF
 
       - name: Sanitize and Fix Gradle
         run: |
-          # Fix potential Windows line endings and ensure execution bits
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
-          # Ensure the wrapper directory exists (though your ls showed it does)
-          mkdir -p gradle/wrapper
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
