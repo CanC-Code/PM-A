@@ -19,11 +19,10 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Legacy 32-bit Compatibility Libs (Ubuntu 24.04)
+      - name: Install Legacy 32-bit Compatibility Libs
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          # Changed libncurses5:i386 to libncurses6:i386 for Ubuntu 24.04 compatibility
           sudo apt-get install -y libncurses6:i386 libstdc++6:i386 zlib1g:i386
 
       - name: Install SDK 23
@@ -37,55 +36,68 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Surgical Source Patcher
+      - name: Surgical Source Patcher & Translator
         run: |
           pip install Pillow
           python - <<EOF
           import os, random, re
           from PIL import Image
 
-          # 1. Global build.gradle Patch
+          # 1. Translation Dictionary (Chinese -> English)
+          translations = {
+              "提示": "Notice",
+              "是否确认退出游戏？": "Are you sure you want to quit?",
+              "取消": "Cancel",
+              "确认": "Confirm",
+              "开始游戏": "Start Game",
+              "退出游戏": "Exit Game",
+              "生命": "HP",
+              "攻击": "ATK",
+              "防御": "DEF",
+              "速度": "SPD",
+              "等级": "LVL",
+              "背包": "Bag"
+          }
+
+          def translate_file(file_path):
+              try:
+                  with open(file_path, 'r', encoding='utf-8') as f:
+                      content = f.read()
+                  for cn, en in translations.items():
+                      content = content.replace(cn, en)
+                  # Global Regex: Replace most Chinese characters with '...' to prevent crashes if unknown
+                  # content = re.sub(r'[\u4e00-\u9fff]+', '?', content) 
+                  with open(file_path, 'w', encoding='utf-8') as f:
+                      f.write(content)
+              except: pass
+
+          # 2. Global Code & Logic Patching
           for root, dirs, files in os.walk("."):
               for file in files:
-                  if file == "build.gradle":
-                      path = os.path.join(root, file)
-                      with open(path, 'r') as f:
-                          content = f.read()
-                      content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
-                      content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
-                      if 'aaptOptions' not in content:
-                          content = content.replace('android {', 'android {\n    aaptOptions { cruncherEnabled = false; useNewCruncher = false }\n')
+                  path = os.path.join(root, file)
+                  
+                  # Apply Translations to Java and XML
+                  if file.endswith((".java", ".xml")):
+                      translate_file(path)
+
+                  # Logic Fix: VData.java (Movement Crash)
+                  if file == "VData.java":
+                      with open(path, 'r') as f: content = f.read()
+                      # Add Null Check to ableMove to prevent crash on logicMap access
+                      content = content.replace(
+                          "if (MDraw.logicMap[y][x] > 2",
+                          "if (MDraw.logicMap != null && y >= 0 && y < MDraw.logicMap.length && x >= 0 && x < MDraw.logicMap[0].length && MDraw.logicMap[y][x] > 2"
+                      )
                       with open(path, 'w') as f: f.write(content)
 
-          # 2. Manifest Launch & Permissions Fix
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r') as f: content = f.read()
-              if 'android:exported' not in content:
-                  content = content.replace('<activity', '<activity android:exported="true"')
-              if 'android.permission.WRITE_EXTERNAL_STORAGE' not in content:
-                  perms = '\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />'
-                  content = content.replace('<application', perms + '\n    <application')
-              with open(manifest_path, 'w') as f: f.write(content)
+                  # Logic Fix: Build/Manifest Compatibility
+                  if file == "build.gradle":
+                      with open(path, 'r') as f: content = f.read()
+                      content = content.replace("jcenter()", "maven { url 'https://maven.google.com' }\n        mavenCentral()")
+                      content = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 26', content)
+                      with open(path, 'w') as f: f.write(content)
 
-          # 3. IMain & UGifView Logic Patch
-          # Protection for font loading
-          imain_path = 'app/src/main/java/com/yurset/wiipm/main/IMain.java'
-          if os.path.exists(imain_path):
-              with open(imain_path, 'r') as f: content = f.read()
-              font_fix = "try { mFace0 = Typeface.createFromAsset(getContext().getAssets(), \"fonts/lewime.ttf\"); mFace1 = Typeface.createFromAsset(getContext().getAssets(), \"fonts/moonlight.ttf\"); } catch (Exception e) { mFace0 = Typeface.DEFAULT; mFace1 = Typeface.DEFAULT; }"
-              content = re.sub(r'mFace0 = Typeface\.createFromAsset\(.*?\);', '', content)
-              content = re.sub(r'mFace1 = Typeface\.createFromAsset\(.*?\);', font_fix, content)
-              with open(imain_path, 'w') as f: f.write(content)
-
-          # Remove buggy bitmap.recycle()
-          gif_path = 'app/src/main/java/com/yurset/wiipm/base/UGifView.java'
-          if os.path.exists(gif_path):
-              with open(gif_path, 'r') as f: content = f.read()
-              content = re.sub(r'if \(mMovie != null\) \{.*?bitmap\.recycle\(\);.*?\}', '', content, flags=re.DOTALL)
-              with open(gif_path, 'w') as f: f.write(content)
-
-          # 4. Icon Generation
+          # 3. Dynamic Icon Generation
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.startswith('pm') and f.endswith('.png')]
@@ -110,5 +122,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WiiPM-Build
+          name: WiiPM-English-Patched
           path: app/build/outputs/apk/app-debug.apk
