@@ -37,7 +37,6 @@ jobs:
       - name: Ultimate Multithreaded Translator & Mega-Patcher
         run: |
           pip install Pillow deep-translator
-          # Notice the quotes around 'EOF' - this stops bash from eating our Regex backslashes!
           python - <<'EOF'
           import os, random, re, json, urllib.request
           from PIL import Image
@@ -47,14 +46,20 @@ jobs:
           translator = GoogleTranslator(source='zh-CN', target='en')
           trans_cache = {}
 
-          # Base UI Fallback Dictionary
+          # Enhanced Core RPG Dictionary (Overrides AI translation for critical terms)
           translations = {
               "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
               "返 回": "Back", "属性": "Type", "特性": "Ability", "性格": "Nature",
               "物攻": "ATK", "物防": "DEF", "特攻": "SpA", "特防": "SpD", "速度": "SPD",
               "生命": "HP", "编号": "No.", "职业": "Class", "地区": "Region", "身份": "Rank",
-              "技能": "Moves", "经验": "EXP"
+              "技能": "Moves", "经验": "EXP",
+              "威力": "Power", "命中": "Acc", "物理": "Phys", "特殊": "Spec", "变化": "Status",
+              "等级": "Lv.", "状态": "Cond", "健康": "Good", "麻痹": "PAR", "中毒": "PSN",
+              "烧伤": "BRN", "冰冻": "FRZ", "睡眠": "SLP", "濒死": "FNT",
+              "效果拔群": "It's super effective!", "收效甚微": "It's not very effective...",
+              "毫无效果": "It had no effect!", "命中要害": "A critical hit!",
+              "野生": "Wild ", "出现了": " appeared!"
           }
 
           print("Fetching official Pokémon names...")
@@ -66,7 +71,7 @@ jobs:
               for zh, en in zip(zh_names, en_names): translations[zh] = en
           except: pass
 
-          # 1. Gather files & extract unique Chinese strings (including Java literals)
+          # 1. Gather files & extract unique Chinese strings
           print("Scanning files for translatable text...")
           files_to_process = []
           unique_chinese = set()
@@ -74,7 +79,8 @@ jobs:
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
-                  if file.endswith((".java", ".xml", ".txt", ".ini", ".dat")):
+                  # CRITICAL: Removed .dat to prevent binary sprite archive corruption!
+                  if file.endswith((".java", ".xml", ".txt", ".ini")):
                       content = None
                       for encoding in ['utf-8', 'gbk', 'gb18030']:
                           try:
@@ -86,6 +92,7 @@ jobs:
                       
                       if content is None: continue
 
+                      # Apply static UI translations
                       for cn, en in translations.items():
                           if cn in content: content = content.replace(cn, en)
 
@@ -97,7 +104,6 @@ jobs:
                                   if len(match) > 1: unique_chinese.add(match)
                       elif file.endswith(".java"):
                           files_to_process.append((path, content, "java"))
-                          # Safely extract text from inside quotation marks in Java
                           for match in re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', content):
                               if re.search(r'[\u4e00-\u9fff]', match):
                                   unique_chinese.add(match)
@@ -136,7 +142,6 @@ jobs:
                   content = '\n'.join(new_lines)
 
               if f_type == "java":
-                  # Apply translations ONLY to strings inside quotes
                   def apply_java_trans(m):
                       text = m.group(1)
                       if re.search(r'[\u4e00-\u9fff]', text) and text in trans_cache:
@@ -144,14 +149,14 @@ jobs:
                       return m.group(0)
                   content = re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"', apply_java_trans, content)
 
-                  # CRITICAL FIX: Force Java to read asset files as UTF-8 instead of GBK to restore Sprites and Interactions
+                  # Restore Sprite Data Loading
                   content = re.sub(r'(?i)"gbk"|"gb2312"|"gb18030"', '"utf-8"', content)
 
-                  # UI SCALING FIX: Increase hardcoded text sizes by 2.5x for modern screens
+                  # UI SCALING FIX: Reduced from 2.5x to 1.25x to prevent memory overflow crashes
                   def scale_text(m):
                       try:
                           val = float(m.group(1).replace('f', ''))
-                          return f"setTextSize({val * 2.5}f)"
+                          return f"setTextSize({val * 1.25}f)"
                       except:
                           return m.group(0)
                   content = re.sub(r'setTextSize\(\s*([0-9\.]+f?)\s*\)', scale_text, content)
