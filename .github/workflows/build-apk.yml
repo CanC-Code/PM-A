@@ -37,7 +37,8 @@ jobs:
       - name: Ultimate Multithreaded Translator & Mega-Patcher
         run: |
           pip install Pillow deep-translator
-          python - <<EOF
+          # Notice the quotes around 'EOF' - this stops bash from eating our Regex backslashes!
+          python - <<'EOF'
           import os, random, re, json, urllib.request
           from PIL import Image
           from deep_translator import GoogleTranslator
@@ -146,11 +147,11 @@ jobs:
                   # CRITICAL FIX: Force Java to read asset files as UTF-8 instead of GBK to restore Sprites and Interactions
                   content = re.sub(r'(?i)"gbk"|"gb2312"|"gb18030"', '"utf-8"', content)
 
-                  # UI SCALING FIX: Increase hardcoded text sizes by 1.5x for modern screens
+                  # UI SCALING FIX: Increase hardcoded text sizes by 2.5x for modern screens
                   def scale_text(m):
                       try:
                           val = float(m.group(1).replace('f', ''))
-                          return f"setTextSize({int(val * 1.5)})"
+                          return f"setTextSize({val * 2.5}f)"
                       except:
                           return m.group(0)
                   content = re.sub(r'setTextSize\(\s*([0-9\.]+f?)\s*\)', scale_text, content)
