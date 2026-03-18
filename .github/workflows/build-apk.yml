@@ -34,27 +34,17 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Deep Translator & Mega-Patcher
+      - name: Multithreaded Translator & Mega-Patcher
         run: |
           pip install Pillow deep-translator
           python - <<EOF
           import os, random, re, json, urllib.request
           from PIL import Image
           from deep_translator import GoogleTranslator
+          from concurrent.futures import ThreadPoolExecutor, as_completed
 
-          # Initialize dynamic translator and cache to prevent rate-limiting
           translator = GoogleTranslator(source='zh-CN', target='en')
           trans_cache = {}
-
-          def get_dynamic_translation(text):
-              if not text.strip(): return text
-              if text not in trans_cache:
-                  try: 
-                      trans_cache[text] = translator.translate(text)
-                      print(f"Translated: {text} -> {trans_cache[text]}")
-                  except: 
-                      trans_cache[text] = text # Fallback to original if API fails
-              return trans_cache[text]
 
           # Base UI Fallback Dictionary
           translations = {
@@ -67,6 +57,7 @@ jobs:
           }
 
           # Fetch Pokémon standard names
+          print("Fetching official Pokémon names...")
           try:
               req = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/en.json", headers={'User-Agent': 'Mozilla/5.0'})
               en_names = json.loads(urllib.request.urlopen(req).read().decode())
@@ -75,62 +66,86 @@ jobs:
               for zh, en in zip(zh_names, en_names): translations[zh] = en
           except: pass
 
-          # Process Files (Java, XML, TXT, INI)
+          # 1. Phase One: Gather all files and extract unique Chinese strings
+          print("Scanning files for translatable text...")
+          files_to_process = []
+          unique_chinese = set()
+
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
                   if file.endswith((".java", ".xml", ".txt", ".ini", ".dat")):
-                      
-                      # 1. Encoding Detection (Crucial for older Chinese games)
                       content = None
                       for encoding in ['utf-8', 'gbk', 'gb18030']:
                           try:
                               with open(path, 'r', encoding=encoding) as f:
                                   content = f.read()
-                              break # Stop if successful
+                              break
                           except UnicodeDecodeError:
                               continue
                       
-                      if content is None: continue # Skip if unreadable binary
+                      if content is None: continue
 
-                      # 2. Static Translation (UI & Pokémon Names)
+                      # Apply static UI translations immediately
                       for cn, en in translations.items():
                           if cn in content: content = content.replace(cn, en)
 
-                      # 3. Dynamic Deep Translation for Assets (Dialogue/Moves)
+                      # If it's an asset file, extract unknown Chinese phrases for deep translation
                       if "assets" in path and file.endswith((".txt", ".xml", ".ini")):
-                          new_lines = []
+                          files_to_process.append((path, content, True))
                           for line in content.split('\n'):
-                              # Skip lines with file paths (protects sprites)
-                              if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']):
-                                  new_lines.append(line)
-                                  continue
-                              
-                              # Find any remaining Chinese strings in the line
-                              chinese_matches = re.findall(r'[\u4e00-\u9fff]+', line)
-                              for match in chinese_matches:
-                                  if len(match) > 1: # Only translate words, not single structural characters
-                                      en_trans = get_dynamic_translation(match)
-                                      line = line.replace(match, en_trans)
-                              new_lines.append(line)
-                          content = '\n'.join(new_lines)
+                              if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']): continue
+                              for match in re.findall(r'[\u4e00-\u9fff]+', line):
+                                  if len(match) > 1: unique_chinese.add(match)
+                      else:
+                          files_to_process.append((path, content, False))
 
-                      # 4. Java Stability Fixes
-                      if file.endswith(".java"):
-                          content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
-                          content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
-                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                          content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
-                          content = re.sub(r'if\s*\([^)]*mMovie\s*!=\s*null[^)]*\)\s*\{[^{}]*bitmap\.recycle\(\);[^{}]*\}', '/* movie recycle patched */', content)
+          # 2. Phase Two: Multithreaded API Fetching
+          print(f"Found {len(unique_chinese)} unique phrases. Starting parallel translation with 15 workers...")
+          def fetch_translation(text):
+              try: return text, translator.translate(text)
+              except: return text, text # Fallback on error to prevent crashing
 
-                      # Always save back as UTF-8 so the Android compiler doesn't choke
-                      try:
-                          with open(path, 'w', encoding='utf-8') as f:
-                              f.write(content)
-                      except: pass
+          completed = 0
+          with ThreadPoolExecutor(max_workers=15) as executor:
+              futures = {executor.submit(fetch_translation, text): text for text in unique_chinese}
+              for future in as_completed(futures):
+                  orig, trans = future.result()
+                  trans_cache[orig] = trans
+                  completed += 1
+                  if completed % 50 == 0:
+                      print(f"Translated {completed}/{len(unique_chinese)} phrases...")
 
-          # 5. Build-Time Random Icon
+          # 3. Phase Three: Apply Translations & Stability Fixes
+          print("Applying translations and syntax patches to files...")
+          for path, content, is_dynamic in files_to_process:
+              if is_dynamic:
+                  new_lines = []
+                  for line in content.split('\n'):
+                      if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']):
+                          new_lines.append(line)
+                          continue
+                      
+                      for cn_text in re.findall(r'[\u4e00-\u9fff]+', line):
+                          if len(cn_text) > 1 and cn_text in trans_cache:
+                              line = line.replace(cn_text, trans_cache[cn_text])
+                      new_lines.append(line)
+                  content = '\n'.join(new_lines)
+
+              if path.endswith(".java"):
+                  content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
+                  content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
+                  content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                  content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+                  content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
+                  content = re.sub(r'if\s*\([^)]*mMovie\s*!=\s*null[^)]*\)\s*\{[^{}]*bitmap\.recycle\(\);[^{}]*\}', '/* movie recycle patched */', content)
+
+              try:
+                  with open(path, 'w', encoding='utf-8') as f:
+                      f.write(content)
+              except: pass
+
+          # 4. Phase Four: Icon & Manifest
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
@@ -144,7 +159,6 @@ jobs:
                       os.makedirs(os.path.dirname(dest), exist_ok=True)
                       bg.resize((size, size), Image.Resampling.LANCZOS).save(dest)
 
-          # 6. Manifest Exported Fix
           m_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(m_path):
               with open(m_path, 'r', encoding='utf-8') as f: content = f.read()
