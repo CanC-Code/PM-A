@@ -1,4 +1,4 @@
-name: Build WiiPM Stable & Translated
+name: Build WiiPM Stable & Deep Translated
 
 on:
   push:
@@ -34,14 +34,29 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Dynamic Translator & Mega-Patcher
+      - name: Deep Translator & Mega-Patcher
         run: |
-          pip install Pillow
+          pip install Pillow deep-translator
           python - <<EOF
           import os, random, re, json, urllib.request
           from PIL import Image
+          from deep_translator import GoogleTranslator
 
-          # 1. Base UI Translation Dictionary
+          # Initialize dynamic translator and cache to prevent rate-limiting
+          translator = GoogleTranslator(source='zh-CN', target='en')
+          trans_cache = {}
+
+          def get_dynamic_translation(text):
+              if not text.strip(): return text
+              if text not in trans_cache:
+                  try: 
+                      trans_cache[text] = translator.translate(text)
+                      print(f"Translated: {text} -> {trans_cache[text]}")
+                  except: 
+                      trans_cache[text] = text # Fallback to original if API fails
+              return trans_cache[text]
+
+          # Base UI Fallback Dictionary
           translations = {
               "图 鉴": "Dex", "地 图": "Map", "通 信": "Link", "记 录": "Save",
               "战 斗": "Fight", "队 伍": "Team", "物 品": "Bag", "逃 跑": "Run",
@@ -51,79 +66,76 @@ jobs:
               "技能": "Moves", "经验": "EXP"
           }
 
-          # 2. Dynamically Fetch Pokemon & Move Localizations
-          print("Fetching dynamic localization data...")
+          # Fetch Pokémon standard names
           try:
-              # Using a standard Pokemon open source data repository for CN->EN mappings
               req = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/en.json", headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req) as response:
-                  en_names = json.loads(response.read().decode())
-              
+              en_names = json.loads(urllib.request.urlopen(req).read().decode())
               req_zh = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/zh-hans.json", headers={'User-Agent': 'Mozilla/5.0'})
-              with urllib.request.urlopen(req_zh) as response:
-                  zh_names = json.loads(response.read().decode())
-              
-              # Map Chinese names directly to English names
-              for zh, en in zip(zh_names, en_names):
-                  translations[zh] = en
-              print(f"Successfully loaded {len(en_names)} Pokemon name translations.")
-          except Exception as e:
-              print(f"Notice: Could not fetch dynamic Pokemon names ({e}). Using base UI translations only.")
+              zh_names = json.loads(urllib.request.urlopen(req_zh).read().decode())
+              for zh, en in zip(zh_names, en_names): translations[zh] = en
+          except: pass
 
-          # 3. Safe Translation Function (Protects Image Paths)
-          def safe_translate(file_content):
-              lines = file_content.split('\n')
-              for i in range(len(lines)):
-                  # Skip translating lines that define file paths to prevent missing sprites
-                  if any(ext in lines[i].lower() for ext in ['.png', '.jpg', '.gif', 'assets/']):
-                      continue
-                  for cn, en in translations.items():
-                      if cn in lines[i]:
-                          lines[i] = lines[i].replace(cn, en)
-              return '\n'.join(lines)
-
-          # 4. Process Files (Java & XML & TXT)
+          # Process Files (Java, XML, TXT, INI)
           for root, dirs, files in os.walk("."):
               for file in files:
                   path = os.path.join(root, file)
-                  if file.endswith((".java", ".xml", ".txt")):
-                      try:
-                          with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                              content = f.read()
-                          
-                          # Apply protected translation
-                          content = safe_translate(content)
-                          
-                          if file.endswith(".java"):
-                              # -- SYNTAX REPAIR & STABILITY --
-                              content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
-                              content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
-                              
-                              # Fix MDraw Rendering Crash
-                              content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
-                              content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
-                              
-                              # Fix VData Division by Zero
-                              content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", 
-                                                        "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
-                                                        
-                              # SURGICAL Canvas Crash Fix (Targeted instead of global to prevent missing sprites)
-                              # Only disables recycle if it's tied to the specific Movie stream bug in older Android versions
-                              content = re.sub(r'if\s*\([^)]*mMovie\s*!=\s*null[^)]*\)\s*\{[^{}]*bitmap\.recycle\(\);[^{}]*\}', '/* movie recycle patched */', content)
+                  if file.endswith((".java", ".xml", ".txt", ".ini", ".dat")):
+                      
+                      # 1. Encoding Detection (Crucial for older Chinese games)
+                      content = None
+                      for encoding in ['utf-8', 'gbk', 'gb18030']:
+                          try:
+                              with open(path, 'r', encoding=encoding) as f:
+                                  content = f.read()
+                              break # Stop if successful
+                          except UnicodeDecodeError:
+                              continue
+                      
+                      if content is None: continue # Skip if unreadable binary
 
+                      # 2. Static Translation (UI & Pokémon Names)
+                      for cn, en in translations.items():
+                          if cn in content: content = content.replace(cn, en)
+
+                      # 3. Dynamic Deep Translation for Assets (Dialogue/Moves)
+                      if "assets" in path and file.endswith((".txt", ".xml", ".ini")):
+                          new_lines = []
+                          for line in content.split('\n'):
+                              # Skip lines with file paths (protects sprites)
+                              if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']):
+                                  new_lines.append(line)
+                                  continue
+                              
+                              # Find any remaining Chinese strings in the line
+                              chinese_matches = re.findall(r'[\u4e00-\u9fff]+', line)
+                              for match in chinese_matches:
+                                  if len(match) > 1: # Only translate words, not single structural characters
+                                      en_trans = get_dynamic_translation(match)
+                                      line = line.replace(match, en_trans)
+                              new_lines.append(line)
+                          content = '\n'.join(new_lines)
+
+                      # 4. Java Stability Fixes
+                      if file.endswith(".java"):
+                          content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
+                          content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
+                          content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
+                          content = content.replace("xx <= VData.allSIZE.x + 1", "xx < VData.allSIZE.x")
+                          content = content.replace("landMap.baseCity[iniLocate] / landMap.baseX", "landMap.baseCity[iniLocate] / (landMap.baseX > 0 ? landMap.baseX : 1)")
+                          content = re.sub(r'if\s*\([^)]*mMovie\s*!=\s*null[^)]*\)\s*\{[^{}]*bitmap\.recycle\(\);[^{}]*\}', '/* movie recycle patched */', content)
+
+                      # Always save back as UTF-8 so the Android compiler doesn't choke
+                      try:
                           with open(path, 'w', encoding='utf-8') as f:
                               f.write(content)
-                      except Exception as e: 
-                          print(f"Failed to process {file}: {e}")
+                      except: pass
 
           # 5. Build-Time Random Icon
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
               if sprites:
-                  chosen = random.choice(sprites)
-                  print(f"Branding build with icon: {chosen}")
-                  img = Image.open(os.path.join(sprite_dir, chosen)).convert("RGBA")
+                  img = Image.open(os.path.join(sprite_dir, random.choice(sprites))).convert("RGBA")
                   bg = Image.new('RGBA', (512, 512), (255, 255, 255, 255))
                   img_res = img.resize((400, 400), Image.Resampling.NEAREST)
                   bg.paste(img_res, (56, 56), img_res)
