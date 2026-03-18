@@ -34,7 +34,7 @@ jobs:
           java-version: '8'
           distribution: 'temurin'
 
-      - name: Multithreaded Translator & Mega-Patcher
+      - name: Ultimate Multithreaded Translator & Mega-Patcher
         run: |
           pip install Pillow deep-translator
           python - <<EOF
@@ -56,7 +56,6 @@ jobs:
               "技能": "Moves", "经验": "EXP"
           }
 
-          # Fetch Pokémon standard names
           print("Fetching official Pokémon names...")
           try:
               req = urllib.request.Request("https://raw.githubusercontent.com/sindresorhus/pokemon/main/data/en.json", headers={'User-Agent': 'Mozilla/5.0'})
@@ -66,7 +65,7 @@ jobs:
               for zh, en in zip(zh_names, en_names): translations[zh] = en
           except: pass
 
-          # 1. Phase One: Gather all files and extract unique Chinese strings
+          # 1. Gather files & extract unique Chinese strings (including Java literals)
           print("Scanning files for translatable text...")
           files_to_process = []
           unique_chinese = set()
@@ -86,25 +85,29 @@ jobs:
                       
                       if content is None: continue
 
-                      # Apply static UI translations immediately
                       for cn, en in translations.items():
                           if cn in content: content = content.replace(cn, en)
 
-                      # If it's an asset file, extract unknown Chinese phrases for deep translation
                       if "assets" in path and file.endswith((".txt", ".xml", ".ini")):
-                          files_to_process.append((path, content, True))
+                          files_to_process.append((path, content, "asset"))
                           for line in content.split('\n'):
                               if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']): continue
                               for match in re.findall(r'[\u4e00-\u9fff]+', line):
                                   if len(match) > 1: unique_chinese.add(match)
+                      elif file.endswith(".java"):
+                          files_to_process.append((path, content, "java"))
+                          # Safely extract text from inside quotation marks in Java
+                          for match in re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', content):
+                              if re.search(r'[\u4e00-\u9fff]', match):
+                                  unique_chinese.add(match)
                       else:
-                          files_to_process.append((path, content, False))
+                          files_to_process.append((path, content, "other"))
 
-          # 2. Phase Two: Multithreaded API Fetching
-          print(f"Found {len(unique_chinese)} unique phrases. Starting parallel translation with 15 workers...")
+          # 2. Multithreaded API Fetching
+          print(f"Found {len(unique_chinese)} unique phrases. Starting parallel translation...")
           def fetch_translation(text):
               try: return text, translator.translate(text)
-              except: return text, text # Fallback on error to prevent crashing
+              except: return text, text
 
           completed = 0
           with ThreadPoolExecutor(max_workers=15) as executor:
@@ -116,23 +119,43 @@ jobs:
                   if completed % 50 == 0:
                       print(f"Translated {completed}/{len(unique_chinese)} phrases...")
 
-          # 3. Phase Three: Apply Translations & Stability Fixes
+          # 3. Apply Translations & Stability Fixes
           print("Applying translations and syntax patches to files...")
-          for path, content, is_dynamic in files_to_process:
-              if is_dynamic:
+          for path, content, f_type in files_to_process:
+              if f_type == "asset":
                   new_lines = []
                   for line in content.split('\n'):
                       if any(ext in line.lower() for ext in ['.png', '.jpg', '.gif']):
                           new_lines.append(line)
                           continue
-                      
                       for cn_text in re.findall(r'[\u4e00-\u9fff]+', line):
                           if len(cn_text) > 1 and cn_text in trans_cache:
                               line = line.replace(cn_text, trans_cache[cn_text])
                       new_lines.append(line)
                   content = '\n'.join(new_lines)
 
-              if path.endswith(".java"):
+              if f_type == "java":
+                  # Apply translations ONLY to strings inside quotes
+                  def apply_java_trans(m):
+                      text = m.group(1)
+                      if re.search(r'[\u4e00-\u9fff]', text) and text in trans_cache:
+                          return f'"{trans_cache[text]}"'
+                      return m.group(0)
+                  content = re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"', apply_java_trans, content)
+
+                  # CRITICAL FIX: Force Java to read asset files as UTF-8 instead of GBK to restore Sprites and Interactions
+                  content = re.sub(r'(?i)"gbk"|"gb2312"|"gb18030"', '"utf-8"', content)
+
+                  # UI SCALING FIX: Increase hardcoded text sizes by 1.5x for modern screens
+                  def scale_text(m):
+                      try:
+                          val = float(m.group(1).replace('f', ''))
+                          return f"setTextSize({int(val * 1.5)})"
+                      except:
+                          return m.group(0)
+                  content = re.sub(r'setTextSize\(\s*([0-9\.]+f?)\s*\)', scale_text, content)
+
+                  # Old stability patches
                   content = re.sub(r'Typeface\.createFromAsset\s*\((?:[^()]|\([^()]*\))*\)(?:\.[a-zA-Z0-9_]+(\(\))?)*', 'Typeface.DEFAULT', content)
                   content = content.replace("Typeface.DEFAULT.getAssets()", "Typeface.DEFAULT")
                   content = content.replace("yy <= VData.allSIZE.y + 1", "yy < VData.allSIZE.y")
@@ -145,7 +168,7 @@ jobs:
                       f.write(content)
               except: pass
 
-          # 4. Phase Four: Icon & Manifest
+          # 4. Icon & Manifest
           sprite_dir = 'app/src/main/res/drawable-hdpi'
           if os.path.exists(sprite_dir):
               sprites = [f for f in os.listdir(sprite_dir) if f.endswith('.png') and (f.startswith('pm') or f.startswith('sprite'))]
